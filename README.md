@@ -13,7 +13,7 @@ npm start
 
 ## Deployment
 
-Point the app's `src/config.ts` at `https://your-domain`. Put a TLS-terminating reverse proxy in front of this HTTP service and forward WebSocket upgrades at `/signal`. Use a persistent writable volume for the account file. The server must be reachable by both phones, but direct fprot TCP chat additionally needs the devices on the same LAN or a separately routed path.
+Point the app's `src/config.ts` at `https://raccoon.harbouli.dev` (WebSocket signaling at `wss://raccoon.harbouli.dev/signal`). Put a TLS-terminating reverse proxy in front of this HTTP service and forward WebSocket upgrades at `/signal`. Use a persistent writable volume for the account file. The server must be reachable by both phones, but direct fprot TCP chat additionally needs the devices on the same LAN or a separately routed path.
 
 This is a small demonstration server, not a complete public identity service: account registration proves device-key ownership only; pair secrets are in memory and lost on restart; requests need production rate limiting, abuse controls, and durable pair storage before wide deployment. No server-wide shared token is configured or embedded in the app.
 
