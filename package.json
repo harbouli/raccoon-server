@@ -1,0 +1,12 @@
+{
+  "name": "raccoon-signaling-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.mjs",
+    "test": "node --test index.test.mjs"
+  },
+  "engines": { "node": ">=20.0.0" },
+  "dependencies": { "express": "^5.1.0", "ws": "^8.21.3" }
+}
