@@ -201,7 +201,8 @@ export async function createRaccoonServer({
   } };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+const entryPoint = process.env.pm_exec_path ?? process.argv[1];
+if (entryPoint && import.meta.url === pathToFileURL(entryPoint).href) {
   const instance = await createRaccoonServer({ host: process.env.RACCOON_HOST ?? '0.0.0.0',
     port: Number(process.env.RACCOON_PORT ?? 8787), dataFile: process.env.RACCOON_ACCOUNT_FILE });
   process.stdout.write(`Raccoon server listening on ${JSON.stringify(instance.server.address())}\n`);
