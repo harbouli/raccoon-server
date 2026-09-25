@@ -11,6 +11,9 @@ import { WebSocket, WebSocketServer } from 'ws';
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const PUBLIC_KEY_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 const MAX_SIGNAL_BYTES = 128 * 1024;
+const MAX_RELAY_BYTES = 64 * 1024;
+const MAX_BUFFERED_BYTES = 512 * 1024;
+const MAX_MINUTE_BYTES = 4 * 1024 * 1024;
 
 function publicKeyFor(publicId) {
   if (typeof publicId !== 'string') throw new Error('Invalid public ID');
@@ -149,7 +152,7 @@ export async function createRaccoonServer({
   const sockets = new WebSocketServer({ server, path: '/signal', maxPayload: MAX_SIGNAL_BYTES + 4096, perMessageDeflate: false });
   sockets.on('connection', socket => {
     const nonce = randomBytes(32).toString('hex');
-    let publicId, pair, alive = true, count = 0, windowStart = Date.now();
+    let publicId, pair, alive = true, count = 0, minuteBytes = 0, windowStart = Date.now();
     const authTimeout = setTimeout(() => socket.close(1008, 'Authentication timeout'), 10_000);
     const pulse = setInterval(() => { if (!alive) return socket.terminate(); alive = false; socket.ping(); }, 30_000);
     socket.on('pong', () => { alive = true; });
@@ -158,8 +161,9 @@ export async function createRaccoonServer({
     socket.on('message', (bytes, binary) => {
       try {
         if (binary) throw new Error('Text messages only');
-        if (Date.now() - windowStart > 60_000) { count = 0; windowStart = Date.now(); }
-        if (++count > 120) throw new Error('Rate limit exceeded');
+        if (Date.now() - windowStart > 60_000) { count = 0; minuteBytes = 0; windowStart = Date.now(); }
+        minuteBytes += bytes.length;
+        if (++count > 120 || minuteBytes > MAX_MINUTE_BYTES) throw new Error('Rate limit exceeded');
         const message = JSON.parse(bytes.toString());
         if (!publicId) {
           if (message.type !== 'auth' || typeof message.publicKey !== 'string' || typeof message.signature !== 'string') throw new Error('Authentication required');
@@ -176,12 +180,21 @@ export async function createRaccoonServer({
           socket.send(JSON.stringify({ type: 'ready' }));
           return;
         }
-        if (message.type !== 'signal' || typeof message.data !== 'string' || message.data.length > MAX_SIGNAL_BYTES) throw new Error('Invalid signal');
-        const body = JSON.parse(JSON.parse(message.data).body);
+        if (typeof message.data !== 'string') throw new Error('Invalid message');
         const other = publicId === pair.initiator ? pair.recipient : pair.initiator;
-        if (body.from !== publicId || body.to !== other) throw new Error('Invalid signal route');
+        if (message.type === 'signal') {
+          if (message.data.length > MAX_SIGNAL_BYTES) throw new Error('Invalid signal');
+          const body = JSON.parse(JSON.parse(message.data).body);
+          if (body.from !== publicId || body.to !== other) throw new Error('Invalid signal route');
+        } else if (message.type === 'relay') {
+          // Opaque fprot-encrypted frames only. The server never receives session keys.
+          if (!message.data.length || message.data.length > MAX_RELAY_BYTES) throw new Error('Invalid relay frame');
+        } else throw new Error('Invalid message type');
         const destination = peers.get(`${pair.id}:${other}`);
-        if (destination?.readyState === WebSocket.OPEN) destination.send(JSON.stringify({ type: 'signal', data: message.data }));
+        if (destination?.readyState === WebSocket.OPEN) {
+          if (destination.bufferedAmount > MAX_BUFFERED_BYTES) return socket.close(1013, 'Recipient is too slow');
+          destination.send(JSON.stringify({ type: message.type, data: message.data }));
+        }
       } catch { socket.close(1008, 'Invalid or unauthorized request'); }
     });
     socket.on('close', () => {

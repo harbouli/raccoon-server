@@ -91,6 +91,17 @@ test('issues the same random pair token only to both participants and routes the
   const delivered = new Promise(resolve => bobSocket.once('message', bytes => resolve(JSON.parse(bytes))));
   aliceSocket.send(JSON.stringify({ type: 'signal', data: envelope }));
   assert.deepEqual(await delivered, { type: 'signal', data: envelope });
+
+  const encryptedFrame = JSON.stringify({ sessionId: '0123456789abcdef', frame: {
+    v: 1, nonce: 'opaque-nonce', ciphertext: 'opaque-ciphertext',
+  } });
+  const relayed = new Promise(resolve => bobSocket.once('message', bytes => resolve(JSON.parse(bytes))));
+  aliceSocket.send(JSON.stringify({ type: 'relay', data: encryptedFrame }));
+  assert.deepEqual(await relayed, { type: 'relay', data: encryptedFrame });
+
+  const rejected = new Promise(resolve => aliceSocket.once('close', code => resolve(code)));
+  aliceSocket.send(JSON.stringify({ type: 'relay', data: 'x'.repeat(64 * 1024 + 1) }));
+  assert.equal(await rejected, 1008);
 });
 
 test('entering each other’s IDs accepts the existing pair without a second token', async t => {

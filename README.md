@@ -1,6 +1,6 @@
 # Raccoon signaling server
 
-Standalone Node.js/Express server for the sibling RaccoonChat mobile app. It handles short-ID registration, signed connection requests, automatic 32-byte pair-token issuance, and fprot WebSocket signaling. It does **not** relay chat messages.
+Standalone Node.js/Express server for the sibling RaccoonChat mobile app. It handles short-ID registration, signed connection requests, automatic 32-byte pair-token issuance, fprot WebSocket signaling, and an optional encrypted-frame relay when direct TCP cannot connect. The server forwards ciphertext; it does not have the session decryption keys.
 
 ## Run locally
 
@@ -13,9 +13,9 @@ npm start
 
 ## Deployment
 
-Point the app's `src/config.ts` at `https://raccoon.harbouli.dev` (WebSocket signaling at `wss://raccoon.harbouli.dev/signal`). Put a TLS-terminating reverse proxy in front of this HTTP service and forward WebSocket upgrades at `/signal`. Use a persistent writable volume for the account file. The server must be reachable by both phones, but direct fprot TCP chat additionally needs the devices on the same LAN or a separately routed path.
+Point the app's `src/config.ts` at `https://raccoon.harbouli.dev` (WebSocket signaling and encrypted relay at `wss://raccoon.harbouli.dev/signal`). Put a TLS-terminating reverse proxy in front of this HTTP service and forward WebSocket upgrades at `/signal`; allow long-lived connections and frames up to 132 KiB. Use a persistent writable volume for the account file. Both phones need internet access to this domain. Direct TCP is attempted first; if it cannot connect, the server relays end-to-end encrypted fprot frames.
 
-This is a small demonstration server, not a complete public identity service: account registration proves device-key ownership only; pair secrets are in memory and lost on restart; requests need production rate limiting, abuse controls, and durable pair storage before wide deployment. No server-wide shared token is configured or embedded in the app.
+This is a small demonstration server, not a complete public identity service: account registration proves device-key ownership only; pair secrets are in memory and lost on restart; requests need production rate limiting, abuse controls, and durable pair storage before wide deployment. The relay adds bandwidth and availability costs to this server. No server-wide shared token is configured or embedded in the app.
 
 ## Test
 
