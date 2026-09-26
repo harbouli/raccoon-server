@@ -27,3 +27,12 @@ Thumbs.db
 # Test & coverage
 coverage/
 .nyc_output/
+
+# Firebase / Service Account credentials
+*serviceAccount*.json
+*service-account*.json
+*adminsdk*.json
+*firebase-adminsdk*.json
+firebase-key.json
+config/*.json
+*.pem

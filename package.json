@@ -5,8 +5,14 @@
   "type": "module",
   "scripts": {
     "start": "node index.mjs",
-    "test": "node --test index.test.mjs"
+    "test": "NODE_ENV=test node --test *.test.mjs"
   },
-  "engines": { "node": ">=20.0.0" },
-  "dependencies": { "express": "^5.1.0", "ws": "^8.21.3" }
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "firebase-admin": "^14.5.0",
+    "ws": "^8.21.3"
+  }
 }

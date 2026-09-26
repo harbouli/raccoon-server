@@ -23,12 +23,17 @@ async function post(url, body) {
   return { status: response.status, body: await response.json() };
 }
 
+async function del(url, body) {
+  const response = await fetch(url, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  return { status: response.status, body: await response.json() };
+}
+
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'raccoon-server-'));
   const dataFile = join(directory, 'accounts.json');
   const instance = await createRaccoonServer({ port: 0, dataFile });
   t.after(() => instance.close());
-  return { base: `http://127.0.0.1:${instance.server.address().port}`, dataFile };
+  return { base: `http://127.0.0.1:${instance.server.address().port}`, dataFile, instance };
 }
 
 async function register(base, owner) {
@@ -119,4 +124,144 @@ test('entering each other’s IDs accepts the existing pair without a second tok
   assert.equal(second.body.token, first.body.token);
   const inbox = await post(`${base}/v1/invitations`, proof(bob, (time, id) => `raccoon.inbox.v1:${time}:${id}`));
   assert.deepEqual(inbox.body.invitations, []);
+});
+
+test('registers and removes device push tokens with signature proofs', async t => {
+  const { base, instance } = await fixture(t);
+  const alice = identity();
+  await register(base, alice);
+
+  const tokenData = 'apns-test-device-token-123';
+  const regResult = await post(`${base}/v1/tokens`, {
+    ...proof(alice, (time, id) => `raccoon.token.v1:${time}:${id}:ios:${tokenData}`),
+    platform: 'ios',
+    token: tokenData,
+  });
+  assert.equal(regResult.status, 200);
+  assert.equal(regResult.body.ok, true);
+  assert.equal(regResult.body.token, tokenData);
+
+  const tokensInDb = instance.db.getDeviceTokens(alice.publicId);
+  assert.equal(tokensInDb.length, 1);
+  assert.equal(tokensInDb[0].platform, 'ios');
+  assert.equal(tokensInDb[0].token, tokenData);
+
+  // Deleting token
+  const delResult = await del(`${base}/v1/tokens`, {
+    ...proof(alice, (time, id) => `raccoon.untoken.v1:${time}:${id}:ios`),
+    platform: 'ios',
+  });
+  assert.equal(delResult.status, 200);
+  assert.equal(delResult.body.ok, true);
+
+  const tokensAfterDel = instance.db.getDeviceTokens(alice.publicId);
+  assert.equal(tokensAfterDel.length, 0);
+});
+
+test('queues offline relay messages in SQLite mailbox and triggers push dispatch, then delivers upon reconnect', async t => {
+  const { base, instance } = await fixture(t);
+  const alice = identity(), bob = identity();
+  const aliceId = (await register(base, alice)).body.accountId;
+  const bobId = (await register(base, bob)).body.accountId;
+
+  // Register Bob's push token
+  const bobPushToken = 'bob-apns-push-token-xyz';
+  await post(`${base}/v1/tokens`, {
+    ...proof(bob, (time, id) => `raccoon.token.v1:${time}:${id}:ios:${bobPushToken}`),
+    platform: 'ios',
+    token: bobPushToken,
+  });
+
+  // Pair Alice & Bob
+  const pairReq = await post(`${base}/v1/pairs`, {
+    ...proof(alice, (time, id) => `raccoon.pair.v1:${time}:${id}:${bobId}`),
+    recipientAccountId: bobId,
+  });
+  await post(`${base}/v1/pairs/${pairReq.body.pairId}/accept`,
+    proof(bob, (time, id) => `raccoon.accept.v1:${time}:${id}:${pairReq.body.pairId}`));
+
+  async function connect(owner) {
+    const socket = new WebSocket(base.replace(/^http/, 'ws') + '/signal');
+    const challenge = await new Promise(resolve => socket.once('message', bytes => resolve(JSON.parse(bytes))));
+    socket.send(JSON.stringify({
+      type: 'auth',
+      token: pairReq.body.token,
+      publicKey: owner.publicId,
+      signature: sign(null, Buffer.from(`fprot.broker.v1:${challenge.nonce}`), owner.privateKey).toString('base64url'),
+    }));
+    const reply = await new Promise(resolve => socket.once('message', bytes => resolve(JSON.parse(bytes))));
+    assert.equal(reply.type, 'ready');
+    t.after(() => socket.terminate());
+    return socket;
+  }
+
+  // Connect only Alice (Bob is offline)
+  const aliceSocket = await connect(alice);
+
+  const encryptedOfflineMessage = JSON.stringify({
+    sessionId: 'session-offline',
+    frame: { v: 1, nonce: 'offline-nonce', ciphertext: 'offline-secret-text' },
+  });
+
+  // Alice sends a relay frame while Bob is offline
+  const relayAckPromise = new Promise(resolve => aliceSocket.once('message', bytes => resolve(JSON.parse(bytes))));
+  aliceSocket.send(JSON.stringify({
+    type: 'relay',
+    id: 'msg-offline-101',
+    data: encryptedOfflineMessage,
+  }));
+
+  const relayAck = await relayAckPromise;
+  assert.equal(relayAck.type, 'relay_ack');
+  assert.equal(relayAck.status, 'stored_offline');
+  assert.equal(relayAck.id, 'msg-offline-101');
+
+  // Verify message is in SQLite mailbox
+  const queuedInDb = instance.db.getMailboxMessages(bob.publicId);
+  assert.equal(queuedInDb.length, 1);
+  assert.equal(queuedInDb[0].id, 'msg-offline-101');
+  assert.equal(queuedInDb[0].payload, encryptedOfflineMessage);
+
+  // Verify push dispatch was recorded
+  const dispatches = instance.push.getDispatches();
+  assert.equal(dispatches.length, 1);
+  assert.equal(dispatches[0].token, bobPushToken);
+  assert.equal(dispatches[0].title, 'New Message');
+
+  // Now Bob comes online and connects
+  const bobSocket = new WebSocket(base.replace(/^http/, 'ws') + '/signal');
+  const challenge = await new Promise(resolve => bobSocket.once('message', bytes => resolve(JSON.parse(bytes))));
+  bobSocket.send(JSON.stringify({
+    type: 'auth',
+    token: pairReq.body.token,
+    publicKey: bob.publicId,
+    signature: sign(null, Buffer.from(`fprot.broker.v1:${challenge.nonce}`), bob.privateKey).toString('base64url'),
+  }));
+
+  // Bob should receive 'ready' and 'mailbox_deliver'
+  const receivedMessages = [];
+  await new Promise(resolve => {
+    bobSocket.on('message', bytes => {
+      const msg = JSON.parse(bytes);
+      receivedMessages.push(msg);
+      if (receivedMessages.length === 2) resolve();
+    });
+  });
+  t.after(() => bobSocket.terminate());
+
+  const readyMsg = receivedMessages.find(m => m.type === 'ready');
+  const mailboxMsg = receivedMessages.find(m => m.type === 'mailbox_deliver');
+  assert.ok(readyMsg, 'Bob should receive ready');
+  assert.ok(mailboxMsg, 'Bob should receive mailbox_deliver');
+  assert.equal(mailboxMsg.messages.length, 1);
+  assert.equal(mailboxMsg.messages[0].id, 'msg-offline-101');
+  assert.equal(mailboxMsg.messages[0].payload, encryptedOfflineMessage);
+
+  // Bob sends mailbox_ack
+  bobSocket.send(JSON.stringify({ type: 'mailbox_ack', ids: ['msg-offline-101'] }));
+
+  // Wait brief moment for DB delete
+  await new Promise(r => setTimeout(r, 50));
+  const mailboxAfterAck = instance.db.getMailboxMessages(bob.publicId);
+  assert.equal(mailboxAfterAck.length, 0, 'Mailbox should be empty after ACK');
 });
